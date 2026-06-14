@@ -101,5 +101,147 @@ static int cmd_read(int argc,char** argv){ if(!connect_driver())return 1; Args a
 static int set_monitor_connected(Args a){ if(a.target.empty()){fprintf(stderr,"目标不能为空\n");return 1;} if(a.interval<50)a.interval=50; if(a.points.empty()){ PointSpec p; p.type=a.type; p.len=a.len; p.scope=a.scope; p.addr=resolve_addr(a); a.points.push_back(p); } if(a.points.size()>MAX_POINTS){fprintf(stderr,"最多 %d 个点位\n",MAX_POINTS);return 1;} memset(&g_req->bp_info,0,sizeof(g_req->bp_info)); memset(&g_req->proc_info,0,sizeof(g_req->proc_info)); g_req->pid=0; snprintf(g_req->proc_info.name,sizeof(g_req->proc_info.name),"%s",a.target.c_str()); for(size_t i=0;i<a.points.size();i++){ PointSpec& s=a.points[i]; if(!s.addr||s.len<1||s.len>8||s.type==HWBP_BREAKPOINT_EMPTY){fprintf(stderr,"点位%zu无效\n",i);return 1;} hwbp_point& p=g_req->bp_info.points[i]; p.bt=s.type; p.bl=(hwbp_len)s.len; p.bs=s.scope; p.hit_addr=s.addr; p.record_count=0; }
     if(!commit_req(op_set_process_hwbp)){fprintf(stderr,"设置断点超时\n");return 1;} if(g_req->status!=0){fprintf(stderr,"设置失败 status=%d\n",g_req->status);return 1;} printf("PID=%d RSS=%" PRIu64 "KB\n",g_req->pid,g_req->proc_info.selected_rss_kb); for(size_t i=0;i<a.points.size();i++)printf("点位#%02zu %s 0x%016" PRIx64 " len=%d scope=%s\n",i,type_name(a.points[i].type),a.points[i].addr,a.points[i].len,scope_name(a.points[i].scope)); puts(a.duration>0?"正在监控...":"按 Ctrl+C 停止"); FILE* jf=a.jsonl.empty()?nullptr:fopen(a.jsonl.c_str(),"a"); signal(SIGINT,on_sig); signal(SIGTERM,on_sig); int last_count[MAX_POINTS]; uint64_t last_hits[MAX_POINTS][0x100]; memset(last_count,0xff,sizeof(last_count)); memset(last_hits,0,sizeof(last_hits)); int elapsed=0; while(!g_stop){ for(size_t pi=0;pi<a.points.size();pi++){ hwbp_point& p=g_req->bp_info.points[pi]; int c=p.record_count; if(c<0)c=0; if(c>0x100)c=0x100; bool changed=c!=last_count[pi]; for(int i=0;i<c;i++)if(p.records[i].hit_count!=last_hits[pi][i]){changed=true; last_hits[pi][i]=p.records[i].hit_count; append_json(jf,(int)pi,i,p.records[i]);} if(changed){ printf("\n========== 点位#%02zu 命中记录: %d ==========" "\n",pi,c); int limit=std::min(c,a.max_print); for(int i=0;i<limit;i++)print_rec((int)pi,i,p.records[i],a.brief,a.all_regs); if(c>limit)printf("...省略%d条\n",c-limit); fflush(stdout); last_count[pi]=c; }} std::this_thread::sleep_for(std::chrono::milliseconds(a.interval)); elapsed+=a.interval; if(a.duration>0&&elapsed>=a.duration*1000)break; } if(jf)fclose(jf); puts("\n正在删除断点..."); commit_req(op_remove_process_hwbp,2000); return 0; }
 static int cmd_monitor(int argc,char** argv){ if(!connect_driver())return 1; return set_monitor_connected(parse_args(argc,argv)); }
-static int interactive(){ puts("启动中文交互界面..."); if(!connect_driver())return 1; for(;;){ puts("\n1) ping 2) info 3) find 4) modules 5) monitor 6) multi 7) read 8) remove 9) exit"); int c=prompt_int("请选择: ",0); if(c==1)cmd_ping(); else if(c==2)cmd_info(); else if(c==3){Args a; a.target=prompt_str("目标: ",""); select_target(a.target);} else if(c==4){std::string t=prompt_str("目标: ",""); char* av[4]={(char*)"ls-hwbp",(char*)"modules",(char*)"--target",(char*)t.c_str()}; cmd_modules(4,av);} else if(c==5){ Args a; a.target=prompt_str("目标: ",""); a.addr=prompt_u64("地址: ",0); a.type=parse_type(prompt_str("类型[x/r/w/rw]: ","x")); a.len=prompt_int("长度: ",4); a.scope=parse_scope(prompt_str("范围[main/other/all]: ","all")); a.interval=prompt_int("刷新ms: ",500); a.brief=true; if(!a.target.empty()) set_monitor_connected(a); } else if(c==6){ Args a; a.target=prompt_str("目标: ",""); int n=prompt_int("点位数: ",2); if(n<1)n=1; if(n>MAX_POINTS)n=MAX_POINTS; for(int i=0;i<n;i++){ PointSpec p; char prompt[128]; snprintf(prompt,sizeof(prompt),"点位%d 地址: ",i); p.addr=prompt_u64(prompt,0); snprintf(prompt,sizeof(prompt),"点位%d 类型[x/r/w/rw]: ",i); p.type=parse_type(prompt_str(prompt,"x")); snprintf(prompt,sizeof(prompt),"点位%d 长度: ",i); p.len=prompt_int(prompt,4); snprintf(prompt,sizeof(prompt),"点位%d 范围[main/other/all]: ",i); p.scope=parse_scope(prompt_str(prompt,"all")); a.points.push_back(p);} a.interval=prompt_int("刷新ms: ",500); a.brief=true; if(!a.target.empty()) set_monitor_connected(a); } else if(c==7){ puts("交互读取请用命令行 read"); } else if(c==8)cmd_remove(); else if(c==9)break; else puts("未知选项"); } return 0; }
-int main(int argc,char** argv){ if(argc<2)return interactive(); std::string c=argv[1]; if(c=="menu"||c=="interactive")return interactive(); if(c=="ping")return cmd_ping(); if(c=="info")return cmd_info(); if(c=="find")return cmd_find(argc,argv); if(c=="modules")return cmd_modules(argc,argv); if(c=="read")return cmd_read(argc,argv); if(c=="remove")return cmd_remove(); if(c=="monitor"||c=="multi")return cmd_monitor(argc,argv); usage(); return 2; }
+static void print_interactive_menu() {
+    puts("\n==============================");
+    puts(" lsdriver 硬件断点工具");
+    puts("==============================");
+    puts("1) 测试驱动连接");
+    puts("2) 查看硬件断点/观察点数量");
+    puts("3) 查找进程");
+    puts("4) 查看模块列表");
+    puts("5) 设置并监控单个断点/观察点");
+    puts("6) 设置并监控多个断点/观察点");
+    puts("7) 读取内存提示");
+    puts("8) 删除当前断点/观察点");
+    puts("9) 退出");
+}
+
+static void prompt_monitor_common(Args& a) {
+    a.target = prompt_str("包名/进程名/PID: ", "");
+    a.interval = prompt_int("刷新间隔毫秒，默认500: ", 500);
+    a.brief = true;
+}
+
+static int interactive() {
+    puts("启动中文交互界面...");
+
+    if (!connect_driver()) {
+        return 1;
+    }
+
+    for (;;) {
+        print_interactive_menu();
+        int c = prompt_int("请选择: ", 0);
+
+        if (c == 1) {
+            cmd_ping();
+        } else if (c == 2) {
+            cmd_info();
+        } else if (c == 3) {
+            Args a;
+            a.target = prompt_str("包名/进程名/PID: ", "");
+            select_target(a.target);
+        } else if (c == 4) {
+            std::string target = prompt_str("包名/进程名/PID: ", "");
+            char* av[4] = {
+                (char*)"ls-hwbp",
+                (char*)"modules",
+                (char*)"--target",
+                (char*)target.c_str(),
+            };
+            cmd_modules(4, av);
+        } else if (c == 5) {
+            Args a;
+            prompt_monitor_common(a);
+            a.addr = prompt_u64("监控地址，支持十六进制，例如 0x1234: ", 0);
+            a.type = parse_type(prompt_str("类型 [x执行/r读/w写/rw读写] 默认 x: ", "x"));
+            a.len = prompt_int("长度 [1..8]，执行断点通常填4，默认4: ", 4);
+            a.scope = parse_scope(prompt_str("线程范围 [main主线程/other子线程/all全部] 默认 all: ", "all"));
+
+            if (!a.target.empty()) {
+                set_monitor_connected(a);
+            }
+        } else if (c == 6) {
+            Args a;
+            prompt_monitor_common(a);
+
+            int n = prompt_int("点位数量，最多16个，默认2: ", 2);
+            if (n < 1) {
+                n = 1;
+            }
+            if (n > MAX_POINTS) {
+                n = MAX_POINTS;
+            }
+
+            for (int i = 0; i < n; i++) {
+                PointSpec p;
+                char prompt[128];
+
+                snprintf(prompt, sizeof(prompt), "点位%d 地址: ", i);
+                p.addr = prompt_u64(prompt, 0);
+
+                snprintf(prompt, sizeof(prompt), "点位%d 类型 [x执行/r读/w写/rw读写] 默认 x: ", i);
+                p.type = parse_type(prompt_str(prompt, "x"));
+
+                snprintf(prompt, sizeof(prompt), "点位%d 长度 [1..8] 默认4: ", i);
+                p.len = prompt_int(prompt, 4);
+
+                snprintf(prompt, sizeof(prompt), "点位%d 线程范围 [main主线程/other子线程/all全部] 默认 all: ", i);
+                p.scope = parse_scope(prompt_str(prompt, "all"));
+
+                a.points.push_back(p);
+            }
+
+            if (!a.target.empty()) {
+                set_monitor_connected(a);
+            }
+        } else if (c == 7) {
+            puts("交互读取暂未开放，请使用命令行 read 子命令。");
+        } else if (c == 8) {
+            cmd_remove();
+        } else if (c == 9) {
+            puts("退出");
+            break;
+        } else {
+            puts("未知选项，请重新输入。");
+        }
+    }
+
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        return interactive();
+    }
+
+    std::string c = argv[1];
+
+    if (c == "menu" || c == "interactive") {
+        return interactive();
+    }
+    if (c == "ping") {
+        return cmd_ping();
+    }
+    if (c == "info") {
+        return cmd_info();
+    }
+    if (c == "find") {
+        return cmd_find(argc, argv);
+    }
+    if (c == "modules") {
+        return cmd_modules(argc, argv);
+    }
+    if (c == "read") {
+        return cmd_read(argc, argv);
+    }
+    if (c == "remove") {
+        return cmd_remove();
+    }
+    if (c == "monitor" || c == "multi") {
+        return cmd_monitor(argc, argv);
+    }
+
+    usage();
+    return 2;
+}
