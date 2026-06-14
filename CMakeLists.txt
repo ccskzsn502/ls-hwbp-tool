@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.10)
+project(ls_hwbp_tool LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_executable(ls-hwbp app/src/main/cpp/main.cpp)
+target_compile_options(ls-hwbp PRIVATE -Wall -Wextra -O2)

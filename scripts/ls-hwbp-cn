@@ -1,0 +1,131 @@
+#!/system/bin/sh
+
+BIN="${LS_HWBP_BIN:-/data/local/tmp/ls-hwbp}"
+
+pause() {
+  printf '\n按回车继续...'
+  read _
+}
+
+find_pid() {
+  target="$1"
+  case "$target" in
+    '' ) return 1 ;;
+    *[!0-9]* ) ;;
+    * ) echo "$target"; return 0 ;;
+  esac
+
+  # 优先用 pidof，Android 通常可用
+  pid="$(pidof "$target" 2>/dev/null | awk '{print $1}')"
+  if [ -n "$pid" ]; then
+    echo "$pid"
+    return 0
+  fi
+
+  # 再扫描 /proc/*/cmdline，支持包名、进程名、子进程名模糊匹配
+  for d in /proc/[0-9]*; do
+    [ -r "$d/cmdline" ] || continue
+    cmd="$(tr '\000' ' ' < "$d/cmdline" 2>/dev/null)"
+    case "$cmd" in
+      *"$target"*)
+        basename "$d"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+show_menu() {
+  clear 2>/dev/null
+  echo '=============================='
+  echo ' lsdriver 硬件断点工具'
+  echo '=============================='
+  echo '1) 测试驱动连接'
+  echo '2) 查看硬件断点/观察点数量'
+  echo '3) 设置并监控断点/观察点'
+  echo '4) 删除当前断点/观察点'
+  echo '5) 退出'
+  echo
+}
+
+monitor_menu() {
+  echo
+  printf '包名/进程名/PID: '
+  read target
+  pid="$(find_pid "$target")"
+  if [ -z "$pid" ]; then
+    echo "没找到进程: $target"
+    pause
+    return
+  fi
+  echo "找到 PID: $pid"
+
+  printf '监控地址，支持十六进制，例如 0x1234: '
+  read addr
+  if [ -z "$addr" ]; then
+    echo '地址不能为空'
+    pause
+    return
+  fi
+
+  printf '类型 [x执行/r读/w写/rw读写] 默认 x: '
+  read type
+  [ -z "$type" ] && type=x
+
+  printf '长度 [1..8]，执行断点通常填4，默认4: '
+  read len
+  [ -z "$len" ] && len=4
+
+  printf '线程范围 [main主线程/other子线程/all全部] 默认 all: '
+  read scope
+  [ -z "$scope" ] && scope=all
+
+  printf '刷新间隔毫秒，默认500: '
+  read interval
+  [ -z "$interval" ] && interval=500
+
+  echo
+  echo "开始监控：PID=$pid 地址=$addr 类型=$type 长度=$len 范围=$scope"
+  echo '按 Ctrl+C 停止监控'
+  echo
+  "$BIN" monitor --pid "$pid" --type "$type" --addr "$addr" --len "$len" --scope "$scope" --interval "$interval"
+  pause
+}
+
+if [ ! -x "$BIN" ]; then
+  echo "找不到可执行文件: $BIN"
+  echo '请确认 /data/local/tmp/ls-hwbp 存在且 chmod 755'
+  exit 1
+fi
+
+while true; do
+  show_menu
+  printf '请选择: '
+  read c
+  case "$c" in
+    1)
+      "$BIN" ping
+      pause
+      ;;
+    2)
+      "$BIN" info
+      pause
+      ;;
+    3)
+      monitor_menu
+      ;;
+    4)
+      "$BIN" remove
+      pause
+      ;;
+    5)
+      echo '退出'
+      exit 0
+      ;;
+    *)
+      echo '未知选项'
+      pause
+      ;;
+  esac
+done

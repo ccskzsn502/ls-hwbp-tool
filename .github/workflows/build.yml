@@ -1,0 +1,41 @@
+name: Build Android arm64 CLI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Android NDK
+        run: |
+          sudo apt update
+          sudo apt install -y unzip curl file
+          curl -L https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -o ndk.zip
+          unzip -q ndk.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r26d" >> "$GITHUB_ENV"
+      - name: Build arm64 executable
+        run: |
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" \
+            -std=c++17 -O2 -Wall -Wextra -static-libstdc++ \
+            app/src/main/cpp/main.cpp \
+            -o ls-hwbp
+          file ls-hwbp
+          chmod 755 ls-hwbp
+          cp scripts/ls-hwbp-cn ls-hwbp-cn
+          chmod 755 ls-hwbp-cn
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ls-hwbp-tool-arm64
+          path: |
+            ls-hwbp
+            ls-hwbp-cn
