@@ -117,7 +117,7 @@ static int start_mcp_bridge(){
     puts("\n正在启动 MCP 桥接服务...");
     int rc = system("pidfile=/data/local/tmp/ls-hwbp-mcp-nc.pid; "
                     "if [ -r $pidfile ]; then pid=$(cat $pidfile); if kill -0 $pid 2>/dev/null; then exit 0; fi; fi; "
-                    "nohup /system/bin/nc -L -s 127.0.0.1 -p 37651 /data/local/tmp/ls-hwbp mcp >/data/local/tmp/ls-hwbp-mcp-nc.log 2>&1 & "
+                    "nohup sh -c 'while true; do /system/bin/nc -l -s 127.0.0.1 -p 37651 /data/local/tmp/ls-hwbp mcp; sleep 1; done' >/data/local/tmp/ls-hwbp-mcp-nc.log 2>&1 & "
                     "echo $! > $pidfile");
     if (rc != 0) {
         puts("启动 MCP 桥接服务失败，请检查 /system/bin/nc 和 /data/local/tmp/ls-hwbp");
