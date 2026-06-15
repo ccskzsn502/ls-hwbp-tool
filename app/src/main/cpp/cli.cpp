@@ -2,9 +2,15 @@
 #include "driver.h"
 #include "symbol.h"
 #include "report.h"
+#include "mcp.h"
 #include <unistd.h>
 #include <signal.h>
 #include <ctype.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -113,18 +119,81 @@ static void print_interactive_menu(){
     puts("9) 退出");
 }
 
+static void reap_children(int){
+    while (waitpid(-1, nullptr, WNOHANG) > 0) {}
+}
+
+static int run_mcp_tcp_bridge_loop(){
+    signal(SIGCHLD, reap_children);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 1;
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(37651);
+    if (bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return 2; }
+    if (listen(fd, 8) < 0) { close(fd); return 3; }
+
+    for (;;) {
+        int c = accept(fd, nullptr, nullptr);
+        if (c < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        pid_t pid = fork();
+        if (pid < 0) { close(c); continue; }
+        if (pid == 0) {
+            close(fd);
+            dup2(c, 0);
+            dup2(c, 1);
+            close(c);
+            return run_mcp_server();
+        }
+        close(c);
+    }
+    close(fd);
+    return 4;
+}
+
 static int start_mcp_bridge(){
     puts("\n正在启动 MCP 桥接服务...");
-    int rc = system("pidfile=/data/local/tmp/ls-hwbp-mcp-nc.pid; "
-                    "if [ -r $pidfile ]; then pid=$(cat $pidfile); if kill -0 $pid 2>/dev/null; then exit 0; fi; fi; "
-                    "nohup sh -c 'while true; do /system/bin/nc -l -s 127.0.0.1 -p 37651 /data/local/tmp/ls-hwbp mcp; sleep 1; done' >/data/local/tmp/ls-hwbp-mcp-nc.log 2>&1 & "
-                    "echo $! > $pidfile");
-    if (rc != 0) {
-        puts("启动 MCP 桥接服务失败，请检查 /system/bin/nc 和 /data/local/tmp/ls-hwbp");
+    const char* pidfile = "/data/local/tmp/ls-hwbp-mcp-nc.pid";
+    FILE* pf = fopen(pidfile, "r");
+    if (pf) {
+        long old_pid = 0;
+        if (fscanf(pf, "%ld", &old_pid) == 1 && old_pid > 1 && kill((pid_t)old_pid, 0) == 0) {
+            fclose(pf);
+            puts("MCP 桥接服务已在运行: 127.0.0.1:37651");
+            puts("现在可以回到 Operit 里使用 LS HWBP HTTP / ls_hwbp_http 工具。若重启手机，需要重新选择 8 启动一次。");
+            return 0;
+        }
+        fclose(pf);
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        puts("启动 MCP 桥接服务失败：fork 失败");
         return 1;
     }
+    if (pid == 0) {
+        setsid();
+        int nullfd = open("/dev/null", O_RDWR);
+        if (nullfd >= 0) {
+            dup2(nullfd, 0);
+            dup2(nullfd, 1);
+            dup2(nullfd, 2);
+            if (nullfd > 2) close(nullfd);
+        }
+        _exit(run_mcp_tcp_bridge_loop());
+    }
+
+    pf = fopen(pidfile, "w");
+    if (pf) { fprintf(pf, "%ld\n", (long)pid); fclose(pf); }
     puts("MCP 桥接服务已启动: 127.0.0.1:37651");
-    puts("现在可以回到 Operit 里使用 LS HWBP / ls_hwbp 工具。若重启手机，需要重新选择 8 启动一次。");
+    puts("现在可以回到 Operit 里使用 LS HWBP HTTP / ls_hwbp_http 工具。若重启手机，需要重新选择 8 启动一次。");
     return 0;
 }
 
