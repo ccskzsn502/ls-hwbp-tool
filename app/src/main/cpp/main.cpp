@@ -30,6 +30,9 @@ struct hwbp_record {
     uint64_t x0,x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12,x13,x14,x15,x16,x17,x18,x19,x20,x21,x22,x23,x24,x25,x26,x27,x28,x29;
     uint32_t fpsr, fpcr;
     unsigned __int128 q0,q1,q2,q3,q4,q5,q6,q7,q8,q9,q10,q11,q12,q13,q14,q15,q16,q17,q18,q19,q20,q21,q22,q23,q24,q25,q26,q27,q28,q29,q30,q31;
+    uint32_t stack_count;
+    uint32_t stack_reserved;
+    uint64_t stack[256];
 };
 struct hwbp_point { hwbp_type bt; hwbp_len bl; hwbp_scope bs; uint64_t hit_addr; int record_count; hwbp_record records[0x100]; };
 struct hwbp_info { uint64_t num_brps; uint64_t num_wrps; hwbp_point points[16]; };
@@ -98,7 +101,8 @@ static std::string format_symbol(uint64_t addr){ AddrSymbol sym=resolve_symbol(a
 static void print_resolved_value(uint64_t value){ std::string sym=format_symbol(value); if(!sym.empty()) printf(" ← %s",sym.c_str()); }
 static void print_reg_line(const char* name,uint64_t value){ printf("%-6s 0x%llx",name,(unsigned long long)value); print_resolved_value(value); puts(""); }
 static void print_stack_line(int idx,uint64_t addr){ std::string sym=format_symbol(addr); if(sym.empty()) printf("#%-4d0x%llx\n",idx,(unsigned long long)addr); else printf("#%-4d0x%llx (%s)\n",idx,(unsigned long long)addr,sym.c_str()); }
-static void print_rec(int point,int idx,const hwbp_record& r,bool brief,bool all){ (void)brief; (void)all; printf("\n#%d t:%llu\n",idx+1,(unsigned long long)r.hit_count); puts("----------------------------------------"); print_reg_line("X0",r.x0); print_reg_line("X1",r.x1); print_reg_line("X2",r.x2); print_reg_line("X3",r.x3); print_reg_line("X4",r.x4); print_reg_line("X5",r.x5); print_reg_line("X6",r.x6); print_reg_line("X7",r.x7); print_reg_line("X8",r.x8); print_reg_line("X9",r.x9); print_reg_line("X10",r.x10); print_reg_line("X11",r.x11); print_reg_line("X12",r.x12); print_reg_line("X13",r.x13); print_reg_line("X14",r.x14); print_reg_line("X15",r.x15); print_reg_line("X16",r.x16); print_reg_line("X17",r.x17); print_reg_line("X18",r.x18); print_reg_line("X19",r.x19); print_reg_line("X20",r.x20); print_reg_line("X21",r.x21); print_reg_line("X22",r.x22); print_reg_line("X23",r.x23); print_reg_line("X24",r.x24); print_reg_line("X25",r.x25); print_reg_line("X26",r.x26); print_reg_line("X27",r.x27); print_reg_line("X28",r.x28); print_reg_line("X29",r.x29); print_reg_line("LR",r.lr); print_reg_line("SP",r.sp); print_reg_line("PC",r.pc); puts("\n堆栈:"); print_stack_line(0,r.pc); print_stack_line(1,r.lr); puts("----------------------------------------"); }
+static void print_kernel_stack(const hwbp_record& r){ puts("\n堆栈:"); uint32_t count=r.stack_count; if(count>256)count=256; if(count==0){ puts("无内核栈记录"); return; } for(uint32_t i=0;i<count;i++)print_stack_line((int)i,r.stack[i]); }
+static void print_rec(int point,int idx,const hwbp_record& r,bool brief,bool all){ (void)point; (void)brief; (void)all; printf("\n#%d t:%llu\n",idx+1,(unsigned long long)r.hit_count); puts("----------------------------------------"); print_reg_line("X0",r.x0); print_reg_line("X1",r.x1); print_reg_line("X2",r.x2); print_reg_line("X3",r.x3); print_reg_line("X4",r.x4); print_reg_line("X5",r.x5); print_reg_line("X6",r.x6); print_reg_line("X7",r.x7); print_reg_line("X8",r.x8); print_reg_line("X9",r.x9); print_reg_line("X10",r.x10); print_reg_line("X11",r.x11); print_reg_line("X12",r.x12); print_reg_line("X13",r.x13); print_reg_line("X14",r.x14); print_reg_line("X15",r.x15); print_reg_line("X16",r.x16); print_reg_line("X17",r.x17); print_reg_line("X18",r.x18); print_reg_line("X19",r.x19); print_reg_line("X20",r.x20); print_reg_line("X21",r.x21); print_reg_line("X22",r.x22); print_reg_line("X23",r.x23); print_reg_line("X24",r.x24); print_reg_line("X25",r.x25); print_reg_line("X26",r.x26); print_reg_line("X27",r.x27); print_reg_line("X28",r.x28); print_reg_line("X29",r.x29); print_reg_line("LR",r.lr); print_reg_line("SP",r.sp); print_reg_line("PC",r.pc); print_kernel_stack(r); puts("----------------------------------------"); }
 static void append_json(FILE* f,int p,int i,const hwbp_record& r){ if(!f)return; fprintf(f,"{\"point\":%d,\"index\":%d,\"hits\":%" PRIu64 ",\"pc\":\"0x%016" PRIx64 "\",\"lr\":\"0x%016" PRIx64 "\",\"sp\":\"0x%016" PRIx64 "\"}\n",p,i,r.hit_count,r.pc,r.lr,r.sp); fflush(f); }
 static int cmd_ping(){ if(!connect_driver())return 1; if(!commit_req(op_o)){fprintf(stderr,"ping 超时\n");return 1;} puts("驱动响应正常"); return 0; }
 static int cmd_info(){ if(!connect_driver())return 1; memset(&g_req->bp_info,0,sizeof(g_req->bp_info)); if(!commit_req(op_brps_weps_info)){fprintf(stderr,"读取超时\n");return 1;} printf("执行断点槽位 BRP: %" PRIu64 "\n访问观察点槽位 WRP: %" PRIu64 "\n协议点位上限: %d\n",g_req->bp_info.num_brps,g_req->bp_info.num_wrps,MAX_POINTS); return 0; }
@@ -124,7 +128,22 @@ static void print_interactive_menu() {
     puts("5) 读取内存");
     puts("6) 写入内存");
     puts("7) 删除当前断点/观察点");
-    puts("8) 退出");
+    puts("8) MCP 模式/接口说明");
+    puts("9) 退出");
+}
+
+static void print_mcp_help() {
+    puts("\nMCP 模式/接口说明");
+    puts("当前工具不启动 MCP Server，不监听端口，不生成任何文件。");
+    puts("外部 MCP 如需接入，可把下面 CLI 命令封装为工具:");
+    puts("  ls-hwbp ping");
+    puts("  ls-hwbp info");
+    puts("  ls-hwbp find --target 目标");
+    puts("  ls-hwbp read --target 目标 --addr 地址 --size 大小");
+    puts("  ls-hwbp write --target 目标 --addr 地址 --bytes \"01 02 ff\"");
+    puts("  ls-hwbp monitor --target 目标 --type x|r|w|rw --addr 地址 --len 长度 --scope main|other|all");
+    puts("  ls-hwbp monitor --target 目标 --module lib.so --seg 0 --offset 偏移 --type x --len 4");
+    puts("  ls-hwbp remove");
 }
 
 static bool ensure_target(std::string& current_target) {
@@ -188,6 +207,8 @@ static int interactive() {
         } else if (c == 7) {
             cmd_remove();
         } else if (c == 8) {
+            print_mcp_help();
+        } else if (c == 9) {
             puts("退出");
             break;
         } else {
