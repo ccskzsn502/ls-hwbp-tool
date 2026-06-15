@@ -27,6 +27,11 @@ jobs:
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" \
             -std=c++17 -O2 -Wall -Wextra -static-libstdc++ \
             app/src/main/cpp/main.cpp \
+            app/src/main/cpp/driver.cpp \
+            app/src/main/cpp/symbol.cpp \
+            app/src/main/cpp/report.cpp \
+            app/src/main/cpp/cli.cpp \
+            app/src/main/cpp/mcp.cpp \
             -o ls-hwbp
           file ls-hwbp
           chmod 755 ls-hwbp
