@@ -13,6 +13,7 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <string>
 
 static volatile sig_atomic_t g_stop=0;
 static void on_sig(int){ g_stop=1; }
@@ -108,15 +109,23 @@ static void print_interactive_menu(){
     puts("5) 读取内存");
     puts("6) 写入内存");
     puts("7) 删除当前断点/观察点");
-    puts("8) MCP 模式/接口说明");
+    puts("8) 启动 MCP 模式");
     puts("9) 退出");
 }
 
-static void print_mcp_help(){
-    puts("\nMCP 模式/接口说明");
-    puts("用 `ls-hwbp mcp` 启动 stdio MCP Server，供 AI 客户端完全接管。");
-    puts("它通过标准输入输出走 JSON-RPC，不监听端口、不生成文件。");
-    puts("可用工具: ping/info/find_process/read_memory/write_memory/set_breakpoint/read_hits/remove_breakpoint");
+static int start_mcp_bridge(){
+    puts("\n正在启动 MCP 桥接服务...");
+    int rc = system("pidfile=/data/local/tmp/ls-hwbp-mcp-nc.pid; "
+                    "if [ -r $pidfile ]; then pid=$(cat $pidfile); if kill -0 $pid 2>/dev/null; then exit 0; fi; fi; "
+                    "nohup /system/bin/nc -L -s 127.0.0.1 -p 37651 /data/local/tmp/ls-hwbp mcp >/data/local/tmp/ls-hwbp-mcp-nc.log 2>&1 & "
+                    "echo $! > $pidfile");
+    if (rc != 0) {
+        puts("启动 MCP 桥接服务失败，请检查 /system/bin/nc 和 /data/local/tmp/ls-hwbp");
+        return 1;
+    }
+    puts("MCP 桥接服务已启动: 127.0.0.1:37651");
+    puts("现在可以回到 Operit 里使用 LS HWBP / ls_hwbp 工具。若重启手机，需要重新选择 8 启动一次。");
+    return 0;
 }
 
 static bool ensure_target(std::string& current_target){
@@ -171,7 +180,7 @@ int run_interactive(){
             write_memory(current_target, addr, bytes);
         }
         else if (c == 7) { cmd_remove(); }
-        else if (c == 8) { print_mcp_help(); }
+        else if (c == 8) { start_mcp_bridge(); }
         else if (c == 9) { puts("退出"); break; }
         else { puts("未知选项，请重新输入。"); }
     }
