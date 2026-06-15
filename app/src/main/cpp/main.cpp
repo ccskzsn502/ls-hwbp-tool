@@ -70,22 +70,21 @@ static uint64_t prompt_u64(const char* t,uint64_t d){ char b[128]; if(!prompt_li
 static std::string prompt_str(const char* t,const char* d){ char b[512]; if(!prompt_line(t,b,sizeof(b))||!b[0])return d; return b; }
 
 struct PointSpec { hwbp_type type=HWBP_BREAKPOINT_EMPTY; int len=0; hwbp_scope scope=SCOPE_ALL_THREADS; uint64_t addr=0; };
-struct Args { std::string target,module,filter,jsonl; uint64_t addr=0,offset=0; int seg=-999,len=0,interval=500,duration=0,max_print=32,size=16; hwbp_type type=HWBP_BREAKPOINT_EMPTY; hwbp_scope scope=SCOPE_ALL_THREADS; bool brief=false,all_regs=false,regions=false; std::vector<PointSpec> points; };
+struct Args { std::string target,module,jsonl,bytes; uint64_t addr=0,offset=0; int seg=-999,len=0,interval=500,duration=0,max_print=32,size=16; hwbp_type type=HWBP_BREAKPOINT_EMPTY; hwbp_scope scope=SCOPE_ALL_THREADS; bool brief=false,all_regs=false; };
 static void usage(){
-    puts("lsdriver 完整硬件断点工具");
+    puts("lsdriver 硬件断点工具");
     puts("  ls-hwbp ping | info | remove");
     puts("  ls-hwbp find --target 包名或PID");
-    puts("  ls-hwbp modules --target 目标 [--filter so名] [--regions]");
     puts("  ls-hwbp read --target 目标 --addr ADDR --size N");
+    puts("  ls-hwbp write --target 目标 --addr ADDR --bytes \"01 02 03 04\"");
     puts("  ls-hwbp monitor --target 目标 --type x|r|w|rw --addr ADDR --len 1..8 --scope main|other|all");
     puts("  ls-hwbp monitor --target 目标 --module lib.so --seg 0 --offset OFF --type x --len 4");
-    puts("  ls-hwbp monitor --target 目标 --point x:0xADDR:4:all --point rw:0xADDR:8:all");
     puts("选项: --interval MS --duration SEC --brief --all-regs --max-print N --jsonl PATH");
 }
 static Args parse_args(int argc,char** argv,int start=2){
     Args a;
     for(int i=start;i<argc;i++){ std::string k=argv[i]; auto val=[&](){ if(i+1>=argc){fprintf(stderr,"%s 缺少参数\n",k.c_str()); exit(2);} return argv[++i]; };
-        if(k=="--target"||k=="--pid"||k=="--name")a.target=val(); else if(k=="--addr")a.addr=parse_u64(val()); else if(k=="--type")a.type=parse_type(val()); else if(k=="--len")a.len=(int)parse_u64(val()); else if(k=="--scope")a.scope=parse_scope(val()); else if(k=="--interval")a.interval=(int)parse_u64(val()); else if(k=="--duration")a.duration=(int)parse_u64(val()); else if(k=="--max-print")a.max_print=(int)parse_u64(val()); else if(k=="--size")a.size=(int)parse_u64(val()); else if(k=="--module")a.module=val(); else if(k=="--filter")a.filter=val(); else if(k=="--seg")a.seg=(int)parse_u64(val()); else if(k=="--offset")a.offset=parse_u64(val()); else if(k=="--jsonl")a.jsonl=val(); else if(k=="--brief")a.brief=true; else if(k=="--all-regs")a.all_regs=true; else if(k=="--regions")a.regions=true; else if(k=="--point"){ std::string s=val(); std::vector<std::string> p; size_t pos=0; while(true){ size_t n=s.find(':',pos); p.push_back(s.substr(pos,n==std::string::npos?std::string::npos:n-pos)); if(n==std::string::npos)break; pos=n+1;} if(p.size()<3||p.size()>4){fprintf(stderr,"--point 格式 type:addr:len[:scope]\n"); exit(2);} PointSpec ps; ps.type=parse_type(p[0]); ps.addr=parse_u64(p[1].c_str()); ps.len=(int)parse_u64(p[2].c_str()); ps.scope=p.size()==4?parse_scope(p[3]):SCOPE_ALL_THREADS; a.points.push_back(ps); } else { fprintf(stderr,"未知参数: %s\n",k.c_str()); exit(2); }}
+        if(k=="--target"||k=="--pid"||k=="--name")a.target=val(); else if(k=="--addr")a.addr=parse_u64(val()); else if(k=="--type")a.type=parse_type(val()); else if(k=="--len")a.len=(int)parse_u64(val()); else if(k=="--scope")a.scope=parse_scope(val()); else if(k=="--interval")a.interval=(int)parse_u64(val()); else if(k=="--duration")a.duration=(int)parse_u64(val()); else if(k=="--max-print")a.max_print=(int)parse_u64(val()); else if(k=="--size")a.size=(int)parse_u64(val()); else if(k=="--module")a.module=val(); else if(k=="--seg")a.seg=(int)parse_u64(val()); else if(k=="--offset")a.offset=parse_u64(val()); else if(k=="--bytes")a.bytes=val(); else if(k=="--jsonl")a.jsonl=val(); else if(k=="--brief")a.brief=true; else if(k=="--all-regs")a.all_regs=true; else { fprintf(stderr,"未知参数: %s\n",k.c_str()); exit(2); }}
     return a;
 }
 static int select_target(const std::string& target){ if(target.empty()){fprintf(stderr,"目标不能为空\n"); return 1;} memset(&g_req->proc_info,0,sizeof(g_req->proc_info)); g_req->pid=0; snprintf(g_req->proc_info.name,sizeof(g_req->proc_info.name),"%s",target.c_str()); if(!commit_req(op_find_process_by_name,5000)){fprintf(stderr,"查找进程超时\n"); return 1;} if(g_req->status!=0){fprintf(stderr,"查找失败 status=%d target=%s\n",g_req->status,target.c_str()); return 1;} g_req->pid=g_req->proc_info.selected_pid; printf("内核已选择进程: PID=%d RSS=%" PRIu64 "KB 目标=%s\n",g_req->pid,g_req->proc_info.selected_rss_kb,target.c_str()); return 0; }
@@ -105,10 +104,14 @@ static int cmd_ping(){ if(!connect_driver())return 1; if(!commit_req(op_o)){fpri
 static int cmd_info(){ if(!connect_driver())return 1; memset(&g_req->bp_info,0,sizeof(g_req->bp_info)); if(!commit_req(op_brps_weps_info)){fprintf(stderr,"读取超时\n");return 1;} printf("执行断点槽位 BRP: %" PRIu64 "\n访问观察点槽位 WRP: %" PRIu64 "\n协议点位上限: %d\n",g_req->bp_info.num_brps,g_req->bp_info.num_wrps,MAX_POINTS); return 0; }
 static int cmd_remove(){ if(!connect_driver())return 1; if(!commit_req(op_remove_process_hwbp)){fprintf(stderr,"删除超时\n");return 1;} puts("已删除当前断点/观察点"); return 0; }
 static int cmd_find(int argc,char** argv){ if(!connect_driver())return 1; Args a=parse_args(argc,argv); return select_target(a.target); }
-static int cmd_modules(int argc,char** argv){ if(!connect_driver())return 1; Args a=parse_args(argc,argv); if(load_memory_info(a.target))return 1; printf("模块数量: %d\n",g_req->mem_info.module_count); for(int i=0;i<g_req->mem_info.module_count&&i<MAX_MODULES;i++){ module_info& m=g_req->mem_info.modules[i]; if(!a.filter.empty()&&!strstr(m.name,a.filter.c_str()))continue; printf("\n[%03d] %s segs=%d\n",i,m.name,m.seg_count); for(int j=0;j<m.seg_count&&j<MAX_SEGS_PER_MODULE;j++){ segment_info& s=m.segs[j]; printf("  seg=%2d %c%c%c 0x%016" PRIx64 "-0x%016" PRIx64 " size=0x%" PRIx64 "\n",s.index,pc(s.prot,1,'r'),pc(s.prot,2,'w'),pc(s.prot,4,'x'),s.start,s.end,s.end>s.start?s.end-s.start:0); }} if(a.regions){ printf("\n扫描区域: %d\n",g_req->mem_info.region_count); for(int i=0;i<g_req->mem_info.region_count&&i<MAX_SCAN_REGIONS;i++){ region_info& r=g_req->mem_info.regions[i]; printf("[%04d] 0x%016" PRIx64 "-0x%016" PRIx64 "\n",i,r.start,r.end); }} return 0; }
-static int cmd_read(int argc,char** argv){ if(!connect_driver())return 1; Args a=parse_args(argc,argv); uint64_t addr=resolve_addr(a); if(select_target(a.target))return 1; int remain=a.size; uint64_t cur=addr; while(remain>0){ int n=remain>0x1000?0x1000:remain; memset(&g_req->rw_info,0,sizeof(g_req->rw_info)); g_req->rw_info.rw_addr=cur; g_req->rw_info.size=n; if(!commit_req(op_r,5000)){fprintf(stderr,"读取超时\n");return 1;} if(g_req->status<0){fprintf(stderr,"读取失败 status=%d\n",g_req->status);return 1;} for(int i=0;i<n;i++){ if(((cur-addr+i)&15)==0)printf("\n0x%016" PRIx64 ": ",cur+i); printf("%02x ",g_req->rw_info.user_buffer[i]); } cur+=n; remain-=n;} puts(""); return 0; }
-static int set_monitor_connected(Args a){ if(a.target.empty()){fprintf(stderr,"目标不能为空\n");return 1;} if(a.interval<50)a.interval=50; if(a.points.empty()){ PointSpec p; p.type=a.type; p.len=a.len; p.scope=a.scope; p.addr=resolve_addr(a); a.points.push_back(p); } if(a.points.size()>MAX_POINTS){fprintf(stderr,"最多 %d 个点位\n",MAX_POINTS);return 1;} memset(&g_req->bp_info,0,sizeof(g_req->bp_info)); memset(&g_req->proc_info,0,sizeof(g_req->proc_info)); g_req->pid=0; snprintf(g_req->proc_info.name,sizeof(g_req->proc_info.name),"%s",a.target.c_str()); for(size_t i=0;i<a.points.size();i++){ PointSpec& s=a.points[i]; if(!s.addr||s.len<1||s.len>8||s.type==HWBP_BREAKPOINT_EMPTY){fprintf(stderr,"点位%zu无效\n",i);return 1;} hwbp_point& p=g_req->bp_info.points[i]; p.bt=s.type; p.bl=(hwbp_len)s.len; p.bs=s.scope; p.hit_addr=s.addr; p.record_count=0; }
-    if(!commit_req(op_set_process_hwbp)){fprintf(stderr,"设置断点超时\n");return 1;} if(g_req->status!=0){fprintf(stderr,"设置失败 status=%d\n",g_req->status);return 1;} memset(&g_req->mem_info,0,sizeof(g_req->mem_info)); if(!commit_req(op_m,15000)||g_req->status!=0) fprintf(stderr,"警告：模块枚举失败，命中地址将只显示裸地址\n"); printf("PID=%d RSS=%" PRIu64 "KB\n",g_req->pid,g_req->proc_info.selected_rss_kb); for(size_t i=0;i<a.points.size();i++)printf("点位#%02zu %s 0x%016" PRIx64 " len=%d scope=%s\n",i,type_name(a.points[i].type),a.points[i].addr,a.points[i].len,scope_name(a.points[i].scope)); puts(a.duration>0?"正在监控...":"按 Ctrl+C 停止"); FILE* jf=a.jsonl.empty()?nullptr:fopen(a.jsonl.c_str(),"a"); signal(SIGINT,on_sig); signal(SIGTERM,on_sig); int last_count[MAX_POINTS]; uint64_t last_hits[MAX_POINTS][0x100]; memset(last_count,0xff,sizeof(last_count)); memset(last_hits,0,sizeof(last_hits)); int elapsed=0; while(!g_stop){ for(size_t pi=0;pi<a.points.size();pi++){ hwbp_point& p=g_req->bp_info.points[pi]; int c=p.record_count; if(c<0)c=0; if(c>0x100)c=0x100; bool changed=c!=last_count[pi]; for(int i=0;i<c;i++)if(p.records[i].hit_count!=last_hits[pi][i]){changed=true; last_hits[pi][i]=p.records[i].hit_count; append_json(jf,(int)pi,i,p.records[i]);} if(changed){ printf("\n========== 点位#%02zu 命中记录: %d ==========" "\n",pi,c); int limit=std::min(c,a.max_print); for(int i=0;i<limit;i++)print_rec((int)pi,i,p.records[i],a.brief,a.all_regs); if(c>limit)printf("...省略%d条\n",c-limit); fflush(stdout); last_count[pi]=c; }} std::this_thread::sleep_for(std::chrono::milliseconds(a.interval)); elapsed+=a.interval; if(a.duration>0&&elapsed>=a.duration*1000)break; } if(jf)fclose(jf); puts("\n正在删除断点..."); commit_req(op_remove_process_hwbp,2000); return 0; }
+static void print_hexdump(uint64_t base,const uint8_t* data,int size){ for(int i=0;i<size;i++){ if((i&15)==0)printf("\n0x%016" PRIx64 ": ",base+i); printf("%02x ",data[i]); } puts(""); }
+static int read_memory(const std::string& target,uint64_t addr,int size){ if(size<1){fprintf(stderr,"读取大小无效\n");return 1;} if(select_target(target))return 1; int remain=size; uint64_t cur=addr; while(remain>0){ int n=remain>0x1000?0x1000:remain; memset(&g_req->rw_info,0,sizeof(g_req->rw_info)); g_req->rw_info.rw_addr=cur; g_req->rw_info.size=n; if(!commit_req(op_r,5000)){fprintf(stderr,"读取超时\n");return 1;} if(g_req->status<0){fprintf(stderr,"读取失败 status=%d\n",g_req->status);return 1;} print_hexdump(cur,g_req->rw_info.user_buffer,n); cur+=n; remain-=n;} return 0; }
+static bool parse_bytes(const std::string& text,std::vector<uint8_t>& out){ size_t pos=0; while(pos<text.size()){ while(pos<text.size()&&isspace((unsigned char)text[pos]))pos++; if(pos>=text.size())break; size_t next=pos; while(next<text.size()&&!isspace((unsigned char)text[next]))next++; std::string item=text.substr(pos,next-pos); char* end=nullptr; errno=0; unsigned long v=strtoul(item.c_str(),&end,16); if(errno||!end||*end||v>0xff)return false; out.push_back((uint8_t)v); pos=next; } return !out.empty(); }
+static int write_memory(const std::string& target,uint64_t addr,const std::vector<uint8_t>& bytes){ if(bytes.empty()||bytes.size()>0x1000){fprintf(stderr,"写入字节数必须是 1..4096\n");return 1;} if(select_target(target))return 1; memset(&g_req->rw_info,0,sizeof(g_req->rw_info)); g_req->rw_info.rw_addr=addr; g_req->rw_info.size=(int)bytes.size(); memcpy(g_req->rw_info.user_buffer,bytes.data(),bytes.size()); if(!commit_req(op_w,5000)){fprintf(stderr,"写入超时\n");return 1;} if(g_req->status<0){fprintf(stderr,"写入失败 status=%d\n",g_req->status);return 1;} printf("写入完成: 0x%016" PRIx64 " size=%zu\n",addr,bytes.size()); return 0; }
+static int cmd_read(int argc,char** argv){ if(!connect_driver())return 1; Args a=parse_args(argc,argv); uint64_t addr=resolve_addr(a); return read_memory(a.target,addr,a.size); }
+static int cmd_write(int argc,char** argv){ if(!connect_driver())return 1; Args a=parse_args(argc,argv); uint64_t addr=resolve_addr(a); std::vector<uint8_t> bytes; if(!parse_bytes(a.bytes,bytes)){fprintf(stderr,"--bytes 格式无效，例如: \"01 02 ff\"\n");return 2;} return write_memory(a.target,addr,bytes); }
+static int set_monitor_connected(Args a){ if(a.target.empty()){fprintf(stderr,"目标不能为空\n");return 1;} if(a.interval<50)a.interval=50; PointSpec s; s.type=a.type; s.len=a.len; s.scope=a.scope; s.addr=resolve_addr(a); if(!s.addr||s.len<1||s.len>8||s.type==HWBP_BREAKPOINT_EMPTY){fprintf(stderr,"点位无效\n");return 1;} memset(&g_req->bp_info,0,sizeof(g_req->bp_info)); memset(&g_req->proc_info,0,sizeof(g_req->proc_info)); g_req->pid=0; snprintf(g_req->proc_info.name,sizeof(g_req->proc_info.name),"%s",a.target.c_str()); hwbp_point& p0=g_req->bp_info.points[0]; p0.bt=s.type; p0.bl=(hwbp_len)s.len; p0.bs=s.scope; p0.hit_addr=s.addr; p0.record_count=0;
+    if(!commit_req(op_set_process_hwbp)){fprintf(stderr,"设置断点超时\n");return 1;} if(g_req->status!=0){fprintf(stderr,"设置失败 status=%d\n",g_req->status);return 1;} memset(&g_req->mem_info,0,sizeof(g_req->mem_info)); if(!commit_req(op_m,15000)||g_req->status!=0) fprintf(stderr,"警告：模块枚举失败，命中地址将只显示裸地址\n"); printf("PID=%d RSS=%" PRIu64 "KB\n",g_req->pid,g_req->proc_info.selected_rss_kb); printf("点位#00 %s 0x%016" PRIx64 " len=%d scope=%s\n",type_name(s.type),s.addr,s.len,scope_name(s.scope)); puts(a.duration>0?"正在监控...":"按 Ctrl+C 停止"); FILE* jf=a.jsonl.empty()?nullptr:fopen(a.jsonl.c_str(),"a"); signal(SIGINT,on_sig); signal(SIGTERM,on_sig); int last_count=-1; uint64_t last_hits[0x100]; memset(last_hits,0,sizeof(last_hits)); int elapsed=0; while(!g_stop){ hwbp_point& p=g_req->bp_info.points[0]; int c=p.record_count; if(c<0)c=0; if(c>0x100)c=0x100; bool changed=c!=last_count; for(int i=0;i<c;i++)if(p.records[i].hit_count!=last_hits[i]){changed=true; last_hits[i]=p.records[i].hit_count; append_json(jf,0,i,p.records[i]);} if(changed){ printf("\n========== 点位#00 命中记录: %d ==========" "\n",c); int limit=std::min(c,a.max_print); for(int i=0;i<limit;i++)print_rec(0,i,p.records[i],a.brief,a.all_regs); if(c>limit)printf("...省略%d条\n",c-limit); fflush(stdout); last_count=c; } std::this_thread::sleep_for(std::chrono::milliseconds(a.interval)); elapsed+=a.interval; if(a.duration>0&&elapsed>=a.duration*1000)break; } if(jf)fclose(jf); puts("\n正在删除断点..."); commit_req(op_remove_process_hwbp,2000); return 0; }
 static int cmd_monitor(int argc,char** argv){ if(!connect_driver())return 1; return set_monitor_connected(parse_args(argc,argv)); }
 static void print_interactive_menu() {
     puts("\n==============================");
@@ -116,17 +119,25 @@ static void print_interactive_menu() {
     puts("==============================");
     puts("1) 测试驱动连接");
     puts("2) 查看硬件断点/观察点数量");
-    puts("3) 查找进程");
-    puts("4) 查看模块列表");
-    puts("5) 设置并监控单个断点/观察点");
-    puts("6) 设置并监控多个断点/观察点");
-    puts("7) 读取内存提示");
-    puts("8) 删除当前断点/观察点");
-    puts("9) 退出");
+    puts("3) 设置目标进程");
+    puts("4) 设置并监控单个断点/观察点");
+    puts("5) 读取内存");
+    puts("6) 写入内存");
+    puts("7) 删除当前断点/观察点");
+    puts("8) 退出");
 }
 
-static void prompt_monitor_common(Args& a) {
-    a.target = prompt_str("包名/进程名/PID: ", "");
+static bool ensure_target(std::string& current_target) {
+    std::string prompt = current_target.empty() ? "包名/进程名/PID: " : "包名/进程名/PID，回车复用当前目标: ";
+    std::string input = prompt_str(prompt.c_str(), current_target.c_str());
+    if (!input.empty()) current_target = input;
+    if (current_target.empty()) { puts("当前目标为空"); return false; }
+    return true;
+}
+
+static void prompt_monitor_common(Args& a, std::string& current_target) {
+    if (!ensure_target(current_target)) return;
+    a.target = current_target;
     a.interval = prompt_int("刷新间隔毫秒，默认500: ", 500);
     a.brief = true;
 }
@@ -138,6 +149,8 @@ static int interactive() {
         return 1;
     }
 
+    std::string current_target;
+
     for (;;) {
         print_interactive_menu();
         int c = prompt_int("请选择: ", 0);
@@ -147,68 +160,34 @@ static int interactive() {
         } else if (c == 2) {
             cmd_info();
         } else if (c == 3) {
-            Args a;
-            a.target = prompt_str("包名/进程名/PID: ", "");
-            select_target(a.target);
+            if (ensure_target(current_target)) select_target(current_target);
         } else if (c == 4) {
-            std::string target = prompt_str("包名/进程名/PID: ", "");
-            char* av[4] = {
-                (char*)"ls-hwbp",
-                (char*)"modules",
-                (char*)"--target",
-                (char*)target.c_str(),
-            };
-            cmd_modules(4, av);
-        } else if (c == 5) {
             Args a;
-            prompt_monitor_common(a);
+            prompt_monitor_common(a, current_target);
+            if (a.target.empty()) continue;
             a.addr = prompt_u64("监控地址，支持十六进制，例如 0x1234: ", 0);
             a.type = parse_type(prompt_str("类型 [x执行/r读/w写/rw读写] 默认 x: ", "x"));
             a.len = prompt_int("长度 [1..8]，执行断点通常填4，默认4: ", 4);
             a.scope = parse_scope(prompt_str("线程范围 [main主线程/other子线程/all全部] 默认 all: ", "all"));
-
-            if (!a.target.empty()) {
-                set_monitor_connected(a);
-            }
+            set_monitor_connected(a);
+        } else if (c == 5) {
+            if (!ensure_target(current_target)) continue;
+            uint64_t addr = prompt_u64("读取地址，支持十六进制，例如 0x1234: ", 0);
+            int size = prompt_int("读取大小，默认64: ", 64);
+            read_memory(current_target, addr, size);
         } else if (c == 6) {
-            Args a;
-            prompt_monitor_common(a);
-
-            int n = prompt_int("点位数量，最多16个，默认2: ", 2);
-            if (n < 1) {
-                n = 1;
-            }
-            if (n > MAX_POINTS) {
-                n = MAX_POINTS;
-            }
-
-            for (int i = 0; i < n; i++) {
-                PointSpec p;
-                char prompt[128];
-
-                snprintf(prompt, sizeof(prompt), "点位%d 地址: ", i);
-                p.addr = prompt_u64(prompt, 0);
-
-                snprintf(prompt, sizeof(prompt), "点位%d 类型 [x执行/r读/w写/rw读写] 默认 x: ", i);
-                p.type = parse_type(prompt_str(prompt, "x"));
-
-                snprintf(prompt, sizeof(prompt), "点位%d 长度 [1..8] 默认4: ", i);
-                p.len = prompt_int(prompt, 4);
-
-                snprintf(prompt, sizeof(prompt), "点位%d 线程范围 [main主线程/other子线程/all全部] 默认 all: ", i);
-                p.scope = parse_scope(prompt_str(prompt, "all"));
-
-                a.points.push_back(p);
-            }
-
-            if (!a.target.empty()) {
-                set_monitor_connected(a);
-            }
+            if (!ensure_target(current_target)) continue;
+            uint64_t addr = prompt_u64("写入地址，支持十六进制，例如 0x1234: ", 0);
+            std::string text = prompt_str("写入字节，例如 01 02 03 04: ", "");
+            std::vector<uint8_t> bytes;
+            if (!parse_bytes(text, bytes)) { puts("字节格式无效"); continue; }
+            printf("确认写入 目标=%s 地址=0x%016" PRIx64 " 字节数=%zu，输入 YES 继续: ", current_target.c_str(), addr, bytes.size());
+            char confirm[32];
+            if (!fgets(confirm, sizeof(confirm), stdin) || strncmp(confirm, "YES", 3) != 0) { puts("已取消写入"); continue; }
+            write_memory(current_target, addr, bytes);
         } else if (c == 7) {
-            puts("交互读取暂未开放，请使用命令行 read 子命令。");
-        } else if (c == 8) {
             cmd_remove();
-        } else if (c == 9) {
+        } else if (c == 8) {
             puts("退出");
             break;
         } else {
@@ -238,16 +217,16 @@ int main(int argc, char** argv) {
     if (c == "find") {
         return cmd_find(argc, argv);
     }
-    if (c == "modules") {
-        return cmd_modules(argc, argv);
-    }
     if (c == "read") {
         return cmd_read(argc, argv);
+    }
+    if (c == "write") {
+        return cmd_write(argc, argv);
     }
     if (c == "remove") {
         return cmd_remove();
     }
-    if (c == "monitor" || c == "multi") {
+    if (c == "monitor") {
         return cmd_monitor(argc, argv);
     }
 
